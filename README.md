@@ -47,14 +47,17 @@ scripts/
 npm run dev        # 本地开发
 npm run build      # tsc -b && vite build
 npm run validate   # 引擎层真实数据断言
+npm run e2e        # 一键端到端（先构建，再自动准备浏览器环境、启动预览并验证）
 ```
 
-端到端（需要本机 Chromium；无 root 环境可按 scripts/e2e.mjs 顶部说明用 apt download 解包依赖库）：
+端到端命令自包含：
 
-```bash
-npm run preview &
-node scripts/e2e.mjs
-```
+- `playwright`/`esbuild` 已在 devDependencies，`npm install` 后即可用；
+- 浏览器缺失时自动执行 `npx playwright install chromium`；
+- 干净容器缺少 Chromium 系统库（libnss3/libgtk 等）且没有 root 时，
+  `scripts/e2e-env.mjs` 会用 `apt-get`（空 dpkg status + 临时缓存，不写系统目录）
+  下载完整运行库闭包并解包到 `node_modules/.cache/pw-env/sysroot`，再以 `LD_LIBRARY_PATH`
+  启动；顺带解包 Noto CJK 字体供截图。该缓存下次运行直接复用，也可用 `E2E_PORT` 指定端口。
 
 ## 关键语义
 

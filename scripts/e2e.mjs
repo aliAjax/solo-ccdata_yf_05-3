@@ -1,12 +1,48 @@
 // 端到端验证：真实浏览器加载审计台，验证渲染、筛选、展开折叠结果不变、锁定复核、刷新恢复。
+// 自包含：自动准备浏览器运行库（无 root 亦可），自行启动 vite preview，结束后清理。
+import {spawn} from 'node:child_process';
+import {existsSync} from 'node:fs';
+import {join} from 'node:path';
 import {chromium} from 'playwright';
+import {prepareBrowserEnv, ROOT} from './e2e-env.mjs';
 
-const BASE = 'http://localhost:5199';
+const PORT = process.env.E2E_PORT || '5199';
+const BASE = `http://localhost:${PORT}`;
 let pass = 0, fail = 0;
 const check = (n, c, d = '') => { c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${n}`)) : (fail++, console.log(`  \x1b[31m✗ ${n}\x1b[0m ${d}`)); };
 const group = (t) => console.log(`\n■ ${t}`);
 
-const browser = await chromium.launch();
+// 自举浏览器环境（自动安装浏览器 / 本地补齐运行库）
+const browserEnv = await prepareBrowserEnv();
+const browser = await chromium.launch({env: browserEnv, args: ['--no-sandbox']});
+
+// 自行启动预览服务器（若未运行）
+const distIndex = join(ROOT, 'dist', 'index.html');
+if (!existsSync(distIndex)) {
+  console.error('缺少 dist/，请先执行 npm run build');
+  process.exit(2);
+}
+let server = null;
+async function waitPort(url, ms = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return true;
+    } catch { /* 尚未就绪 */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+let externalUp = false;
+try { const r = await fetch(BASE); externalUp = r.ok; } catch { /* 外部预览未启动 */ }
+if (!externalUp) {
+  server = spawn('npx', ['vite', 'preview', '--port', PORT, '--strictPort'], {
+    cwd: ROOT, stdio: 'ignore', env: process.env,
+  });
+  if (!(await waitPort(BASE))) { console.error('预览服务器启动失败'); process.exit(2); }
+}
+
 const page = await browser.newPage({viewport: {width: 1500, height: 950}});
 await page.route('https://fonts.googleapis.com/**', (r) => r.abort());
 await page.route('https://fonts.gstatic.com/**', (r) => r.abort());
@@ -96,11 +132,21 @@ check('义务筛选后树中保留 ffmpeg-static 路径', (await page.getByText(
 check('义务筛选后纯 MIT 叶子 ee-first 不出现', (await page.locator('.tree-row', {hasText: 'ee-first'}).count()) === 0);
 await page.locator('.obl-chip', {hasText: '公开衍生源码'}).click();
 
-group('节点详情：OR / AND 选项、多版本切换、来源链定位');
+group('节点详情：OR / AND 选项、Apache-2.0 标准义务、多版本、来源链定位');
 await setTreeAll('expand');
 await page.locator('.tn-name', {hasText: 'JSONStream'}).first().click();
 check('JSONStream 详情显示 2 个 OR 选证组合', (await page.locator('.detail-panel .opt').count()) === 2,
   String(await page.locator('.detail-panel .opt').count()));
+const detailOblText = await page.locator('.detail-panel .d-obligs').innerText();
+check('JSONStream 单证义务含 Apache 的修改声明与专利授权（OR 可规避）',
+  detailOblText.includes('专利授权') && detailOblText.includes('声明修改'),
+  detailOblText.replace(/\n/g, ' '));
+check('JSONStream 版权声明为必然义务（不带可规避标记）',
+  await page.locator('.detail-panel .d-obligs .do.must', {hasText: '版权声明'}).count() === 1);
+// 义务面板：Apache-2.0（caseless）的专利授权不能被漏掉
+check('义务汇总含专利授权（Apache-2.0）', (await page.locator('.oblig', {hasText: '专利授权'}).count()) === 1);
+check('专利授权来源包含 Apache-2.0 的 caseless',
+  (await page.locator('.oblig', {hasText: '专利授权'}).locator('.src', {hasText: 'caseless'}).count()) === 1);
 await page.locator('.tn-name', {hasText: 'pako'}).first().click();
 check('pako (MIT AND Zlib) 只有 1 个组合且两证并列',
   (await page.locator('.detail-panel .opt').count()) === 1 &&
@@ -113,14 +159,23 @@ check('可切换到嵌套安装的 ms@2.0.0', (await page.locator('.detail-id b'
 await page.locator('.conflict.sev-high .chain-seg button').first().click();
 check('点击 GPL 冲突来源链节点可定位详情', (await page.locator('.detail-id b').count()) === 1);
 
-group('锁定路径与复核结论');
-await page.locator('.tree-row', {hasText: 'ffmpeg-static'}).first().locator('.lock-btn').click();
+group('锁定路径与复核结论（经节点详情锁定，验证可选边类型不丢失）');
+await page.locator('.tn-name', {hasText: 'ffmpeg-static'}).first().click();
+await page.waitForTimeout(80);
+await page.locator('.lock-path-btn').click();
 await page.waitForTimeout(100);
-check('书签变为已锁定态', (await page.locator('.tree-row', {hasText: 'ffmpeg-static'}).first().locator('.locked').count()) === 1);
+check('详情锁定按钮变为已锁定态',
+  (await page.locator('.lock-path-btn.done').count()) === 1 &&
+  (await page.locator('.lock-path-btn').isDisabled()) === true);
 await page.locator('.review-entry').click();
 await page.waitForSelector('.drawer');
 check('锁定路径出现在复核抽屉', (await page.locator('.lock-item').count()) >= 1);
 check('默认状态为待复核', (await page.locator('.lock-item .v-unreviewed').count()) >= 1);
+// 根→ffmpeg-static 的边必须显示"可选"，不能退化成"普通"
+const firstEdgeBadge = page.locator('.ld-node').nth(1).locator('.lk');
+check('复核抽屉中 ffmpeg-static 的入边是可选类型（不是普通）',
+  (await firstEdgeBadge.count()) === 1 && (await firstEdgeBadge.innerText()) === '可选',
+  await firstEdgeBadge.innerText().catch(() => '(missing)'));
 check('抽屉内显示该链义务', (await page.locator('.ld-obls .do').count()) >= 1);
 check('抽屉内显示该链 GPL 冲突', (await page.locator('.mini-conf').count()) >= 1);
 await page.locator('.vbtn.v-reject').click();
@@ -162,4 +217,5 @@ check('无 JS 运行时错误', errors.length === 0, errors.slice(0, 4).join(' |
 
 console.log(`\n${fail === 0 ? '\x1b[32m端到端全部通过\x1b[0m' : '\x1b[31m存在失败\x1b[0m'}：${pass} passed, ${fail} failed`);
 await browser.close();
+if (server) server.kill();
 process.exit(fail ? 1 : 0);

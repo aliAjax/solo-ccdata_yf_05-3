@@ -149,7 +149,7 @@ export default function NodeDetail() {
 
       {occ && (
         <button className={`lock-path-btn ${chainLocked ? 'done' : ''}`}
-          onClick={() => lockPath(occ.chain, [])}
+          onClick={() => lockPath(occ.chain, occ.kinds)}
           disabled={chainLocked}>
           {chainLocked ? '此路径已锁定复核' : '锁定当前来源路径单独复核'}
         </button>

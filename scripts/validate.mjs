@@ -20,7 +20,7 @@ export * from '/workspace/src/lib/graph.ts';
 export * from '/workspace/src/lib/license.ts';
 `);
 
-const {parseLockfile, parseLicenseExpression, licenseOptions, evaluateNode, summarizeScope, findChain} =
+const {parseLockfile, parseLicenseExpression, licenseOptions, evaluateNode, summarizeScope, findChain, licenseInfo} =
   await bundle('/tmp/audit-build/entry.mjs', '/tmp/audit-build/bundle.mjs');
 
 const datasets = (await import('/workspace/src/data/datasets.json', {with: {type: 'json'}})).default;
@@ -116,7 +116,7 @@ check('第二处及以后的共享出现带 shared 标记并指向 firstKey',
   !!sharedMarked && !!sharedMarked.firstKey && sharedMarked.leaf,
   JSON.stringify(sharedMarked));
 
-group('真实数据：许可证 OR / AND 汇总');
+group('标准许可证义务：Apache-2.0 与 OR/AND 汇总');
 const jsonStream = evaluateNode('JSONStream@1.3.5', '(MIT OR Apache-2.0)', 'closed');
 check('JSONStream 有 2 个选证组合', jsonStream.options.length === 2, JSON.stringify(jsonStream.options));
 check('OR 宽松组合在闭源策略下无硬冲突', jsonStream.hardConflict === false);
@@ -126,6 +126,19 @@ const andExpr = parseLicenseExpression('(MIT OR Apache-2.0) AND BSD-3-Clause');
 const andOpts = licenseOptions(andExpr);
 check('(MIT OR Apache-2.0) AND BSD-3-Clause => 2 个组合且都含 BSD',
   andOpts.length === 2 && andOpts.every((o) => o.includes('BSD-3-Clause')), JSON.stringify(andOpts));
+// Apache-2.0 标准义务：版权声明 + 许可证全文 + 修改声明 + 专利授权，且不能落入 unknown
+const apache = licenseInfo('Apache-2.0');
+check('Apache-2.0 义务完整（版权/全文/修改/专利）',
+  ['notice', 'license-copy', 'state-changes', 'patent-grant'].every((o) => apache.obligations.includes(o)),
+  JSON.stringify(apache.obligations));
+check('Apache-2.0 不是待核实许可证', !apache.obligations.includes('unknown') && apache.osi === true);
+check('Apache-2.0 在 (MIT OR Apache-2.0) 中义务可由 MIT 组合规避 → 专利义务为 conditional',
+  (() => {
+    const sc = summarizeScope(eco, ['JSONStream@1.3.5'], 'closed');
+    const patent = sc.obligations.find((o) => o.obligation === 'patent-grant');
+    const notice = sc.obligations.find((o) => o.obligation === 'notice');
+    return patent?.status === 'conditional' && !!notice;
+  })());
 const jszip = evaluateNode('jszip@3.10.1', '(MIT OR GPL-3.0-or-later)', 'closed');
 check('jszip (MIT OR GPL) 闭源下可规避（选 MIT）',
   jszip.avoidable && !jszip.hardConflict && jszip.optionConflicts.some((c) => c) && jszip.optionConflicts.some((c) => !c));
@@ -152,6 +165,17 @@ check('冲突带来源链', gplConflict.chain.includes('ffmpeg-static@4.4.1') &&
 check('parse-cache-control 真实无 license → UNKNOWN 冲突',
   scope.conflicts.some((c) => c.nodeId === 'parse-cache-control@1.0.1' && c.kind === 'unknown'));
 check('GPL 范围汇总含 notice 等必然义务', scope.obligations.some((o) => o.obligation === 'notice'));
+// 可选依赖出现节点必须携带真实边类型链（锁定路径复核不能丢）
+const ffmpegOcc = findOcc(eco.allRoots.occurrences, (o) => o.nodeId === 'ffmpeg-static@4.4.1');
+check('ffmpeg-static 出现节点 kind=optional 且 kindChain 完整',
+  !!ffmpegOcc && ffmpegOcc.kind === 'optional' &&
+  ffmpegOcc.kindChain.length === ffmpegOcc.chain.length - 1 &&
+  ffmpegOcc.kindChain[0] === 'optional',
+  JSON.stringify(ffmpegOcc && {kind: ffmpegOcc.kind, kindChain: ffmpegOcc.kindChain}));
+const envPathsOcc = findOcc(eco.allRoots.occurrences, (o) => o.nodeId === 'env-paths@2.2.1');
+check('可选链深层节点保留根 optional 入边（子依赖按 lockfile 声明显 prod）',
+  !!envPathsOcc && envPathsOcc.kindChain[0] === 'optional' && envPathsOcc.kindChain.length === envPathsOcc.chain.length - 1,
+  JSON.stringify(envPathsOcc && envPathsOcc.kindChain));
 
 group('真实数据：展开/折叠不改变结果（确定性）');
 const eco2 = parseLockfile(datasets.ecosystem);

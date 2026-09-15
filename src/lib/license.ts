@@ -130,7 +130,7 @@ export interface LicenseInfo {
   osi: boolean;
 }
 
-// 归一化 GPL/ LGPL 后缀（-or-later、-only、+、版本号）
+// 归一化 GPL/LGPL/AGPL 后缀（-or-later、-only、+）；其余标准 SPDX 标识原样保留
 function normalizeFamily(id: string): string {
   let x = id.replace(/\+$/, '').replace(/-or-later$|-only$/, '');
   const gpl = x.match(/^(GPL|LGPL|AGPL)-?(\d(?:\.\d)?)?/i);
@@ -142,16 +142,24 @@ function normalizeFamily(id: string): string {
   return x;
 }
 
-const PERMISSIVE: Record<string, ObligationId[]> = {
+const PERMISSIVE_TABLE: Record<string, ObligationId[]> = {
   MIT: ['notice', 'license-copy'],
   ISC: ['notice', 'license-copy'],
   'BSD-2-Clause': ['notice', 'license-copy'],
   'BSD-3-Clause': ['notice', 'license-copy'],
+  // Apache 2.x：版权声明 + 许可证全文 + 修改声明 + 专利授权
   Apache: ['notice', 'license-copy', 'state-changes', 'patent-grant'],
+  'Apache-2.0': ['notice', 'license-copy', 'state-changes', 'patent-grant'],
   'Apache-1.1': ['notice', 'license-copy', 'state-changes'],
   Zlib: ['notice'],
   '0BSD': [],
-  'Unlicense': [],
+  Unlicense: [],
+};
+
+/** 标准 SPDX 标识 → 归一族（补充常见宽松许可证的版本别名） */
+const FAMILY_ALIASES: Record<string, string> = {
+  'Apache-1.0': 'Apache-1.1',
+  'BSD-2-Clause-Patent': 'BSD-3-Clause',
 };
 
 export function licenseInfo(licenseId: string): LicenseInfo {
@@ -174,8 +182,13 @@ export function licenseInfo(licenseId: string): LicenseInfo {
   if (fam === 'EPL-2.0' || fam === 'EPL-1.0' || fam === 'EPL') {
     return {id: licenseId, family: fam, copyleft: 'weak', obligations: ['weak-copyleft', 'notice', 'license-copy'], osi: true};
   }
-  if (PERMISSIVE[fam]) {
-    return {id: licenseId, family: fam, copyleft: 'none', obligations: PERMISSIVE[fam], osi: true};
+  // 标准 SPDX 标识先查表；查不到再按归族别名（版本变体）处理
+  if (PERMISSIVE_TABLE[fam]) {
+    return {id: licenseId, family: fam, copyleft: 'none', obligations: PERMISSIVE_TABLE[fam], osi: true};
+  }
+  const alias = FAMILY_ALIASES[fam];
+  if (alias && PERMISSIVE_TABLE[alias]) {
+    return {id: licenseId, family: fam, copyleft: 'none', obligations: PERMISSIVE_TABLE[alias], osi: true};
   }
   // 未知 SPDX 标识：按宽松处理但要求人工核实
   return {id: licenseId, family: fam, copyleft: 'none', obligations: ['unknown'], osi: false};
